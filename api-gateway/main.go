@@ -7,11 +7,13 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
 	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
+	"github.com/golang-jwt/jwt/v4"
 	"github.com/sirupsen/logrus"
 )
 
@@ -24,6 +26,13 @@ type HealthResponse struct {
 	Status    string            `json:"status"`
 	Timestamp string            `json:"timestamp"`
 	Services  map[string]string `json:"services"`
+}
+
+type ErrorResponse struct {
+	Error      string `json:"error"`
+	ErrorCode  string `json:"error_code"`
+	StatusCode int    `json:"status_code"`
+	Timestamp  string `json:"timestamp"`
 }
 
 func NewAPIGateway() *APIGateway {
@@ -100,23 +109,80 @@ func (gw *APIGateway) checkServiceHealth(serviceURL string) string {
 
 func (gw *APIGateway) authMiddleware() gin.HandlerFunc {
 	return gin.HandlerFunc(func(c *gin.Context) {
-		token := c.GetHeader("Authorization")
-		if token == "" {
-			c.JSON(http.StatusUnauthorized, gin.H{"error": "Authorization header required"})
-			c.Abort()
+		authHeader := c.GetHeader("Authorization")
+		if authHeader == "" {
+			gw.respondWithError(c, http.StatusUnauthorized, "AUTH_001", "Authorization header required")
 			return
 		}
 
-		// TODO: Implement JWT token validation
-		// For now, accept any non-empty token
-		if len(token) < 10 {
-			c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid token"})
-			c.Abort()
+		if !strings.HasPrefix(authHeader, "Bearer ") {
+			gw.respondWithError(c, http.StatusUnauthorized, "AUTH_002", "Invalid authorization header format. Expected 'Bearer <token>'")
+			return
+		}
+
+		tokenString := strings.TrimPrefix(authHeader, "Bearer ")
+		if tokenString == "" {
+			gw.respondWithError(c, http.StatusUnauthorized, "AUTH_003", "Token is empty")
+			return
+		}
+
+		jwtSecret := os.Getenv("JWT_SECRET")
+		if jwtSecret == "" {
+			gw.logger.Error("JWT_SECRET environment variable not set")
+			gw.respondWithError(c, http.StatusInternalServerError, "AUTH_004", "Server configuration error")
+			return
+		}
+
+		token, err := jwt.Parse(tokenString, func(token *jwt.Token) (interface{}, error) {
+			if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
+				return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
+			}
+			return []byte(jwtSecret), nil
+		})
+
+		if err != nil {
+			gw.logger.WithError(err).Warn("JWT parsing error")
+			gw.respondWithError(c, http.StatusUnauthorized, "AUTH_005", "Invalid token")
+			return
+		}
+
+		if claims, ok := token.Claims.(jwt.MapClaims); ok && token.Valid {
+			if exp, ok := claims["exp"].(float64); ok {
+				if time.Now().Unix() > int64(exp) {
+					gw.respondWithError(c, http.StatusUnauthorized, "AUTH_006", "Token has expired")
+					return
+				}
+			} else {
+				gw.respondWithError(c, http.StatusUnauthorized, "AUTH_007", "Token missing expiration claim")
+				return
+			}
+
+			if username, ok := claims["username"].(string); ok {
+				c.Set("username", username)
+			}
+		} else {
+			gw.respondWithError(c, http.StatusUnauthorized, "AUTH_008", "Invalid token claims")
 			return
 		}
 
 		c.Next()
 	})
+}
+
+func (gw *APIGateway) respondWithError(c *gin.Context, statusCode int, errorCode, message string) {
+	errorResponse := ErrorResponse{
+		Error:      message,
+		ErrorCode:  errorCode,
+		StatusCode: statusCode,
+		Timestamp:  time.Now().UTC().Format(time.RFC3339),
+	}
+	gw.logger.WithFields(logrus.Fields{
+		"error_code": errorCode,
+		"message":    message,
+		"status":     statusCode,
+	}).Warn("Request failed authentication")
+	c.JSON(statusCode, errorResponse)
+	c.Abort()
 }
 
 func (gw *APIGateway) proxyToUserService(c *gin.Context) {
