@@ -150,22 +150,22 @@ func getProducts(w http.ResponseWriter, r *http.Request) {
 
 	var totalItems int
 	countQuery := "SELECT COUNT(*) FROM products WHERE 1=1"
-	args := []interface{}{}
-	argIndex := 1
+	countArgs := []interface{}{}
+	countArgIndex := 1
 
 	if search != "" {
-		countQuery += fmt.Sprintf(" AND (name ILIKE $%d OR description ILIKE $%d)", argIndex, argIndex)
-		args = append(args, "%"+search+"%")
-		argIndex++
+		countQuery += fmt.Sprintf(" AND (name ILIKE $%d OR description ILIKE $%d)", countArgIndex, countArgIndex+1)
+		countArgs = append(countArgs, "%"+search+"%", "%"+search+"%")
+		countArgIndex += 2
 	}
 
 	if category != "" {
-		countQuery += fmt.Sprintf(" AND category = $%d", argIndex)
-		args = append(args, category)
-		argIndex++
+		countQuery += fmt.Sprintf(" AND category = $%d", countArgIndex)
+		countArgs = append(countArgs, category)
+		countArgIndex++
 	}
 
-	err := dbPool.QueryRow(context.Background(), countQuery, args...).Scan(&totalItems)
+	err := dbPool.QueryRow(context.Background(), countQuery, countArgs...).Scan(&totalItems)
 	if err != nil {
 		log.Error().Err(err).Msg("Error counting products")
 		respondWithError(w, http.StatusInternalServerError, "PROD_001", "Database error")
@@ -176,17 +176,19 @@ func getProducts(w http.ResponseWriter, r *http.Request) {
 		SELECT id, name, description, category, price, stock, created_at, updated_at 
 		FROM products WHERE 1=1
 	`
+	args := []interface{}{}
+	argIndex := 1
 	
 	if search != "" {
-		query += fmt.Sprintf(" AND (name ILIKE $%d OR description ILIKE $%d)", 1, 1)
+		query += fmt.Sprintf(" AND (name ILIKE $%d OR description ILIKE $%d)", argIndex, argIndex+1)
+		args = append(args, "%"+search+"%", "%"+search+"%")
+		argIndex += 2
 	}
 
 	if category != "" {
-		if search != "" {
-			query += fmt.Sprintf(" AND category = $%d", 2)
-		} else {
-			query += fmt.Sprintf(" AND category = $%d", 1)
-		}
+		query += fmt.Sprintf(" AND category = $%d", argIndex)
+		args = append(args, category)
+		argIndex++
 	}
 
 	query += " ORDER BY created_at DESC"

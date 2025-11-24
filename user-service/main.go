@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"regexp"
 	"strings"
 	"time"
 
@@ -117,6 +118,11 @@ func createUsersTable() error {
 	return err
 }
 
+func isValidEmail(email string) bool {
+	emailRegex := regexp.MustCompile(`^[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}$`)
+	return emailRegex.MatchString(email)
+}
+
 func registerUser(w http.ResponseWriter, r *http.Request) {
 	var req RegisterRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -132,7 +138,7 @@ func registerUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if req.Email == "" || !strings.Contains(req.Email, "@") {
+	if req.Email == "" || !isValidEmail(req.Email) {
 		respondWithError(w, http.StatusBadRequest, "REG_003", "Valid email address is required")
 		return
 	}
