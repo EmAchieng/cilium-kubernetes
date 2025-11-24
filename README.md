@@ -12,19 +12,7 @@ This platform demonstrates production-grade microservices architecture with adva
 
 ### System Architecture
 
-```
-┌─────────────────┐    ┌──────────────────┐    ┌─────────────────┐
-│   API Gateway   │───▶│   User Service   │    │ Product Service │
-│   Port: 8000    │    │   Port: 8001     │    │   Port: 8002    │
-└─────────────────┘    └──────────────────┘    └─────────────────┘
-         │                       │                       │
-         └───────────────────────┼───────────────────────┘
-                                 ▼
-                    ┌─────────────────────────┐
-                    │    PostgreSQL DB        │
-                    │  Environment Driven     │
-                    └─────────────────────────┘
-```
+![System Architecture](assets/system-architecture.png)
 
 ### Core Components
 
