@@ -10,12 +10,8 @@ import (
     "github.com/dgrijalva/jwt-go"
 )
 
-// JWTSecret is read from environment variables
 var JWTSecret = os.Getenv("JWT_SECRET")
-
-// ValidateToken validates the JWT token and returns the claims
 func ValidateToken(tokenString string) (*jwt.Claims, error) {
-    // Check if the token is in the correct Bearer format
     if len(tokenString) == 0 || !strings.HasPrefix(tokenString, "Bearer ") {
         log.Println("Invalid token format")
         return nil, fmt.Errorf("invalid token format")
