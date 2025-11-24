@@ -7,23 +7,33 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
 	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
+	"github.com/golang-jwt/jwt/v4"
 	"github.com/sirupsen/logrus"
 )
 
 type APIGateway struct {
-	router *gin.Engine
-	logger *logrus.Logger
+	router    *gin.Engine
+	logger    *logrus.Logger
+	jwtSecret []byte
 }
 
 type HealthResponse struct {
 	Status    string            `json:"status"`
 	Timestamp string            `json:"timestamp"`
 	Services  map[string]string `json:"services"`
+	Version   string            `json:"version"`
+}
+
+type Claims struct {
+	UserID   int    `json:"user_id"`
+	Username string `json:"username"`
+	jwt.RegisteredClaims
 }
 
 func NewAPIGateway() *APIGateway {
@@ -44,25 +54,29 @@ func NewAPIGateway() *APIGateway {
 		MaxAge:           12 * time.Hour,
 	}))
 
+	jwtSecret := os.Getenv("JWT_SECRET")
+	if jwtSecret == "" {
+		jwtSecret = "cilium-default-secret"
+		logger.Warn("JWT_SECRET not configured")
+	}
+
 	return &APIGateway{
-		router: router,
-		logger: logger,
+		router:    router,
+		logger:    logger,
+		jwtSecret: []byte(jwtSecret),
 	}
 }
 
 func (gw *APIGateway) setupRoutes() {
 	v1 := gw.router.Group("/api/v1")
 
-	// Health check endpoint
 	gw.router.GET("/health", gw.healthCheck)
 
-	// User service proxy routes
 	userGroup := v1.Group("/users")
 	userGroup.POST("/register", gw.proxyToUserService)
 	userGroup.POST("/login", gw.proxyToUserService)
 	userGroup.GET("/profile", gw.authMiddleware(), gw.proxyToUserService)
 
-	// Product service proxy routes
 	productGroup := v1.Group("/products")
 	productGroup.GET("", gw.proxyToProductService)
 	productGroup.POST("", gw.authMiddleware(), gw.proxyToProductService)
@@ -72,12 +86,23 @@ func (gw *APIGateway) setupRoutes() {
 }
 
 func (gw *APIGateway) healthCheck(c *gin.Context) {
+	userServiceURL := os.Getenv("USER_SERVICE_URL")
+	if userServiceURL == "" {
+		userServiceURL = "user-service:8001"
+	}
+
+	productServiceURL := os.Getenv("PRODUCT_SERVICE_URL")
+	if productServiceURL == "" {
+		productServiceURL = "product-service:8002"
+	}
+
 	response := HealthResponse{
 		Status:    "healthy",
 		Timestamp: time.Now().UTC().Format(time.RFC3339),
+		Version:   "1.0.0",
 		Services: map[string]string{
-			"user-service":    gw.checkServiceHealth("user-service:8001"),
-			"product-service": gw.checkServiceHealth("product-service:8002"),
+			"user-service":    gw.checkServiceHealth(userServiceURL),
+			"product-service": gw.checkServiceHealth(productServiceURL),
 		},
 	}
 
@@ -100,47 +125,90 @@ func (gw *APIGateway) checkServiceHealth(serviceURL string) string {
 
 func (gw *APIGateway) authMiddleware() gin.HandlerFunc {
 	return gin.HandlerFunc(func(c *gin.Context) {
-		token := c.GetHeader("Authorization")
-		if token == "" {
-			c.JSON(http.StatusUnauthorized, gin.H{"error": "Authorization header required"})
+		authHeader := c.GetHeader("Authorization")
+		if authHeader == "" {
+			c.JSON(http.StatusUnauthorized, gin.H{
+				"error": "Authorization required",
+				"code":  "AUTH_MISSING",
+			})
 			c.Abort()
 			return
 		}
 
-		// TODO: Implement JWT token validation
-		// For now, accept any non-empty token
-		if len(token) < 10 {
-			c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid token"})
+		tokenString := strings.TrimPrefix(authHeader, "Bearer ")
+		if tokenString == authHeader {
+			c.JSON(http.StatusUnauthorized, gin.H{
+				"error": "Bearer token required",
+				"code":  "INVALID_FORMAT",
+			})
 			c.Abort()
 			return
 		}
 
+		claims := &Claims{}
+		token, err := jwt.ParseWithClaims(tokenString, claims, func(token *jwt.Token) (interface{}, error) {
+			if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
+				return nil, fmt.Errorf("unexpected signing method")
+			}
+			return gw.jwtSecret, nil
+		})
+
+		if err != nil || !token.Valid {
+			c.JSON(http.StatusUnauthorized, gin.H{
+				"error": "Invalid token",
+				"code":  "TOKEN_INVALID",
+			})
+			c.Abort()
+			return
+		}
+
+		if time.Now().Unix() > claims.ExpiresAt.Unix() {
+			c.JSON(http.StatusUnauthorized, gin.H{
+				"error": "Token expired",
+				"code":  "TOKEN_EXPIRED",
+			})
+			c.Abort()
+			return
+		}
+
+		c.Set("user_id", claims.UserID)
+		c.Set("username", claims.Username)
 		c.Next()
 	})
 }
 
 func (gw *APIGateway) proxyToUserService(c *gin.Context) {
-	gw.proxyRequest(c, "user-service:8001")
+	serviceURL := os.Getenv("USER_SERVICE_URL")
+	if serviceURL == "" {
+		serviceURL = "user-service:8001"
+	}
+	gw.proxyRequest(c, serviceURL)
 }
 
 func (gw *APIGateway) proxyToProductService(c *gin.Context) {
-	gw.proxyRequest(c, "product-service:8002")
+	serviceURL := os.Getenv("PRODUCT_SERVICE_URL")
+	if serviceURL == "" {
+		serviceURL = "product-service:8002"
+	}
+	gw.proxyRequest(c, serviceURL)
 }
 
 func (gw *APIGateway) proxyRequest(c *gin.Context, targetService string) {
-	// Simple proxy implementation
-	// In production, use a proper reverse proxy library
 	targetURL := fmt.Sprintf("http://%s%s", targetService, c.Request.URL.Path)
-	
+	if c.Request.URL.RawQuery != "" {
+		targetURL += "?" + c.Request.URL.RawQuery
+	}
+
 	client := &http.Client{Timeout: 30 * time.Second}
 	req, err := http.NewRequest(c.Request.Method, targetURL, c.Request.Body)
 	if err != nil {
-		gw.logger.WithError(err).Error("Failed to create proxy request")
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Internal server error"})
+		gw.logger.WithError(err).Error("Proxy request failed")
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error": "Request processing failed",
+		})
 		return
 	}
 
-	// Copy headers
 	for key, values := range c.Request.Header {
 		for _, value := range values {
 			req.Header.Add(key, value)
@@ -149,13 +217,14 @@ func (gw *APIGateway) proxyRequest(c *gin.Context, targetService string) {
 
 	resp, err := client.Do(req)
 	if err != nil {
-		gw.logger.WithError(err).Error("Failed to proxy request")
-		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "Service unavailable"})
+		gw.logger.WithError(err).Error("Service unavailable")
+		c.JSON(http.StatusServiceUnavailable, gin.H{
+			"error": "Service unavailable",
+		})
 		return
 	}
 	defer resp.Body.Close()
 
-	// Copy response headers
 	for key, values := range resp.Header {
 		for _, value := range values {
 			c.Header(key, value)
@@ -163,8 +232,7 @@ func (gw *APIGateway) proxyRequest(c *gin.Context, targetService string) {
 	}
 
 	c.Status(resp.StatusCode)
-	
-	// Copy response body
+
 	buffer := make([]byte, 32*1024)
 	for {
 		n, err := resp.Body.Read(buffer)
@@ -186,32 +254,26 @@ func (gw *APIGateway) Start(port string) error {
 	}
 
 	go func() {
-		gw.logger.WithField("port", port).Info("Starting API Gateway server")
+		gw.logger.WithField("port", port).Info("Starting API Gateway")
 		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			gw.logger.WithError(err).Fatal("Failed to start server")
+			gw.logger.WithError(err).Fatal("Server failed")
 		}
 	}()
 
-	// Wait for interrupt signal
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 	<-quit
 
-	gw.logger.Info("Shutting down API Gateway server...")
+	gw.logger.Info("Shutting down")
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	if err := server.Shutdown(ctx); err != nil {
-		gw.logger.WithError(err).Fatal("Server forced to shutdown")
-	}
-
-	gw.logger.Info("API Gateway server exited")
-	return nil
+	return server.Shutdown(ctx)
 }
 
 func main() {
-	port := os.Getenv("PORT")
+	port := os.Getenv("GATEWAY_PORT")
 	if port == "" {
 		port = "8000"
 	}
