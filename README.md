@@ -53,30 +53,6 @@ This platform demonstrates production-grade microservices architecture with adva
 - Cilium CNI configured
 ```
 
-### Environment Setup
-
-```bash
-# Database Configuration
-export DB_HOST=localhost
-export DB_PORT=5432
-export DB_USER=postgres
-export DB_NAME=cilium_microservices
-export DB_PASSWORD=your_secure_password
-export DB_SSLMODE=disable
-
-# JWT Configuration  
-export JWT_SECRET=your_jwt_secret_minimum_32_chars
-export TOKEN_EXPIRY_HOURS=24
-export BCRYPT_COST=12
-
-# Service Configuration
-export GATEWAY_PORT=8000
-export USER_SERVICE_PORT=8001
-export PRODUCT_SERVICE_PORT=8002
-export USER_SERVICE_URL=user-service:8001
-export PRODUCT_SERVICE_URL=product-service:8002
-```
-
 ### Development
 
 ```bash
