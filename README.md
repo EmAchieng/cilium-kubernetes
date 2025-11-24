@@ -1,6 +1,6 @@
 # Enterprise Microservices Platform with Cilium CNI
 
-[![Go](https://img.shields.io/badge/go-1.19+-blue.svg)](https://golang.org/)
+[![Go](https://img.shields.io/badge/go-1.24-blue.svg)](https://golang.org/)
 [![Kubernetes](https://img.shields.io/badge/kubernetes-ready-326CE5.svg)](https://kubernetes.io/)
 [![Cilium](https://img.shields.io/badge/cilium-CNI-F8C517.svg)](https://cilium.io/)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
